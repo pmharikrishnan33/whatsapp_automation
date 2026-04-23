@@ -42,7 +42,8 @@ async def receive_message(body:dict):
             print("user:",phone_number)
             print("message:",text)
             
-            client = get_client_config(phone_number)
+            phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            client = get_client_config(phone_number_id)
             if not client:
                 return {"status": "unknown client"}
             system_prompt = client["system_prompt"]
