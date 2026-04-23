@@ -63,3 +63,8 @@ async def receive_message(body:dict):
         print("REAL ERROR:", str(e))
         return {"error": str(e)}
     
+@router.get("/test-send")
+def test_send():
+    send_whatsapp_message("919495470356", "Direct test message")
+    return {"status": "sent"}
+    
