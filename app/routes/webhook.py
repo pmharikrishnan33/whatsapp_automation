@@ -43,15 +43,22 @@ async def receive_message(body:dict):
             print("message:",text)
             
             phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            print("Business ID:", phone_number_id)
+
             client = get_client_config(phone_number_id)
+            print("Client config:", client)
+            
             if not client:
-                return {"status": "unknown client"}
-            system_prompt = client["system_prompt"]
+                print("Client not found — using default")
+                system_prompt = "You are a helpful assistant."
+            else:
+                system_prompt = client["system_prompt"]
             reply = generate_replay(text, system_prompt, phone_number)
             add_to_history(phone_number, "user", text)
             add_to_history(phone_number, "assistant", reply)    
 
-            send_whatsapp_message(phone_number,reply)
+            send_whatsapp_message(phone_number, reply)
+            print("Message sent to WhatsApp")
 
             return{
                 "from":phone_number,
