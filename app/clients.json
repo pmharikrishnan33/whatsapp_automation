@@ -1,0 +1,10 @@
+{
+  "919876543210": {
+    "name": "Restaurant Client",
+    "system_prompt": "You are a restaurant assistant. Answer about menu, timings, and reservations."
+  },
+  "918888888888": {
+    "name": "Gym Client",
+    "system_prompt": "You are a gym assistant. Answer about workouts, memberships, and pricing."
+  }
+}
