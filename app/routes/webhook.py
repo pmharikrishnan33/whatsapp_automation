@@ -60,6 +60,6 @@ async def receive_message(body:dict):
             }
         return{"status":"no message found"}
     except Exception as e:
-        print("error parsing webhook:",e)
-        return{"error":"invalid format"}
+        print("REAL ERROR:", str(e))
+        return {"error": str(e)}
     
