@@ -5,6 +5,7 @@ from app.services.ai import generate_replay
 import json
 from app.services.client_mananger import get_client_config
 from app.services.memory import add_to_history
+from app.utils.formatter import format_whatsapp_reply
 
 
 router =APIRouter()
@@ -53,7 +54,8 @@ async def receive_message(body:dict):
                 system_prompt = "You are a helpful assistant."
             else:
                 system_prompt = client["system_prompt"]
-            reply = generate_replay(text, system_prompt, phone_number)
+            raw_reply = generate_replay(text, system_prompt, phone_number)
+            reply = format_whatsapp_reply(raw_reply)
             add_to_history(phone_number, "user", text)
             add_to_history(phone_number, "assistant", reply)    
 
