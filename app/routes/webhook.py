@@ -1,6 +1,6 @@
 from fastapi import APIRouter,Query,HTTPException,Request
 from app.config import VERIFY_TOKEN
-from app.services.whatsapp import send_whatsapp_message,send_whatsapp_image,send_whatsapp_buttons
+from app.services.whatsapp import send_whatsapp_message
 from app.services.ai import generate_replay
 import json
 from app.services.client_mananger import get_client_config
@@ -41,15 +41,6 @@ async def receive_message(body:dict):
 
             print("user:",phone_number)
             print("message:",text)
-            
-            if "biryani" in text.lower():
-                send_whatsapp_image(phone_number, "https://picsum.photos/401", "Chicken Biryani ₹180")
-                send_whatsapp_image(phone_number, "https://picsum.photos/402", "Mutton Biryani ₹250")
-                send_whatsapp_buttons(
-                    phone_number,
-                    "Which one would you like to order?"
-                )
-                return {"status": "menu sent"}
             
             phone_number_id = value.get("metadata", {}).get("phone_number_id")
             print("Business ID:", phone_number_id)
