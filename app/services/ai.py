@@ -4,7 +4,7 @@ from app.services.memory import get_history
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-model = genai.GenerativeModel("gemini-flash-latest")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 def generate_replay(user_message: str, system_prompt: str, phone_number: str):
     history = get_history(phone_number)
