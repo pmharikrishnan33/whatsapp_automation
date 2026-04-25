@@ -54,7 +54,7 @@ def send_whatsapp_list(phone_number, button_text, options):
     }
 
     headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
 
