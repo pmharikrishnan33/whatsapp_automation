@@ -1,6 +1,6 @@
 from fastapi import APIRouter,Query,HTTPException,Request
 from app.config import VERIFY_TOKEN
-from app.services.whatsapp import send_whatsapp_message
+from app.services.whatsapp import send_whatsapp_message,send_whatsapp_list
 from app.services.ai import generate_replay
 import json
 from app.services.client_mananger import get_client_config
