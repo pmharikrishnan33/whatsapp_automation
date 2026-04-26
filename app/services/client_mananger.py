@@ -1,12 +1,11 @@
-import json
-import os
+from app.db.mongo import clients_collection
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CLIENTS_FILE = os.path.join(BASE_DIR, "clients.json")
+def get_client_config(phone_number_id: str):
+    client = clients_collection.find_one({
+        "phone_number_id": phone_number_id
+    })
 
-def get_client_config(phone_number: str):
+    if client:
+        client["_id"] = str(client["_id"])  # convert ObjectId to string
 
-    with open(CLIENTS_FILE, "r") as file:
-        data = json.load(file)
-
-    return data.get(phone_number)
+    return client
