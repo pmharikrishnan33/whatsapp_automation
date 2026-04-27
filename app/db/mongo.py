@@ -17,6 +17,7 @@ db = client["zyphor"]
 # Collections
 clients_collection = db["clients"]
 messages_collection = db["messages"]  # optional (for chat history later)
+orders_collection = db["orders"]
 
 # Optional: test connection (runs once on import)
 try:
