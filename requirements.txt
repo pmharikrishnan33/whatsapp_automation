@@ -3,3 +3,4 @@ uvicorn
 requests
 google-generativeai
 pymongo[srv]==4.7.2
+python-dotenv

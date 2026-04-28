@@ -1,5 +1,12 @@
-VERIFY_TOKEN="zyphor_verify"
-WHATSAPP_TOKEN = "EAAZAIZBqczvfABRR7bFecTzUSFEaX5fkjlZB9qI7YwAouz002xjqCz2q0h6bMVaOFWJ0GkLNJG2IyZCKXjrX1ZB4ZBumskz50VYgrKtBx6871nrX8pazMNOyFQHDLQRlNwxR4iHnHsId9LbUtkhukHZCjFgZBcTgpzLVMChahEZC8dXtpSPasG2YQcLHvQ4ZCRbem4ZBAZDZD"
-PHONE_NUMBER_ID = "1088689687658735"
-GEMINI_API_KEY="AIzaSyCUFlL7dra_eiiPMtuNBBuyeq2vG2Ib16U"
-MONGO_URI="mongodb+srv://pmharikrishnan33_db_user:whatsappAutomation@cluster0.scvgfvq.mongodb.net/?appName=Cluster0"
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from the .env file
+load_dotenv()
+
+# Assign the variables
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MONGO_URI = os.getenv("MONGO_URI")
