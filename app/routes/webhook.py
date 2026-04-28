@@ -1,4 +1,3 @@
-import re
 from fastapi import APIRouter, Query, HTTPException
 from app.config import VERIFY_TOKEN
 from app.services.whatsapp import send_whatsapp_message
@@ -52,16 +51,15 @@ async def receive_message(body: dict):
 
         # --- 3. THE CREDIT LIMIT CUTOFF ---
         current_spend = client.get("current_month_spend", 0)
-        credit_limit = client.get("monthly_credit_limit", 500) # Default to 500 if not set in DB
+        credit_limit = client.get("monthly_credit_limit", 500)
 
         if current_spend >= credit_limit:
-            # Save the message so the business owner can see it, but DO NOT reply.
             save_message_to_db(phone_number, "user", text, phone_number_id)
             print(f"Credit limit exceeded for {phone_number_id}. Ignoring message to prevent Meta charges.")
             return {"status": "limit_exceeded_ignored"}
         # ----------------------------------
 
-        # 4. SILENT CREDIT MANAGEMENT (Invisible to User)
+        # 4. SILENT CREDIT MANAGEMENT
         manage_client_credit(phone_number, phone_number_id)
 
         # 5. Save incoming message to DB
@@ -71,9 +69,9 @@ async def receive_message(body: dict):
         current_state = get_state(phone_number)
         client_keywords = client.get("keywords", {})
 
-        # Trigger Order Flow via Regex Keyword Match
+        # Trigger Order Flow via native 'in' check
         order_triggers = client_keywords.get("order", [])
-        is_order_trigger = any(re.search(r'\b' + re.escape(t.lower()) + r'\b', text_lower) for t in order_triggers)
+        is_order_trigger = any(t.lower() in text_lower for t in order_triggers)
 
         if is_order_trigger:
             if not client.get("order_enabled", False):
@@ -128,11 +126,11 @@ async def receive_message(body: dict):
             set_state(phone_number, "IDLE")
             return {"status": "order_finalized"}
 
-        # 7. Handle Standard Keyword Intents (Regex Partial Match Fix)
+        # 7. Handle Standard Keyword Intents via native 'in' check
         detected_intent = None
         for intent, triggers in client_keywords.items():
             if intent != "order":
-                if any(re.search(r'\b' + re.escape(t.lower()) + r'\b', text_lower) for t in triggers):
+                if any(t.lower() in text_lower for t in triggers):
                     detected_intent = intent
                     break
 
