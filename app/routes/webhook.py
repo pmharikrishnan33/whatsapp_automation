@@ -49,14 +49,27 @@ async def receive_message(body: dict):
         if not client:
             return {"status": "error", "message": "Client not found"}
 
-        # 2. SILENT CREDIT MANAGEMENT (Invisible to User)
-        # Checks 24-hour window, country code, and updates spending in DB
+        # --- 2. THE CREDIT LIMIT CUTOFF ---
+        current_spend = client.get("current_month_spend", 0)
+        credit_limit = client.get("monthly_credit_limit", 500) # Default to 500 if not set in DB
+
+        if current_spend >= credit_limit:
+            # We save the incoming message so the client can still see what was asked,
+            # but we DO NOT call send_whatsapp_message or generate an AI reply.
+            save_message_to_db(phone_number, "user", text, phone_number_id)
+            print(f"Credit limit exceeded for {phone_number_id}. Ignoring message to prevent Meta charges.")
+            
+            # Return 200 OK so Meta doesn't retry the webhook, but no reply is sent.
+            return {"status": "limit_exceeded_ignored"}
+        # ----------------------------------
+
+        # 3. SILENT CREDIT MANAGEMENT (Invisible to User)
         manage_client_credit(phone_number, phone_number_id)
 
-        # 3. Save incoming message to DB
+        # 4. Save incoming message to DB
         save_message_to_db(phone_number, "user", text, phone_number_id)
 
-        # 4. Handle State-Based Order Flow
+        # 5. Handle State-Based Order Flow
         current_state = get_state(phone_number)
 
         # Trigger Order Flow via Keyword
@@ -106,7 +119,6 @@ async def receive_message(body: dict):
             return {"status": "confirm_step"}
 
         elif current_state == "AWAITING_DETAILS":
-            # Retrieve items from session history
             pending_items = next((msg['content'] for msg in reversed(get_history(phone_number)) 
                                 if msg['role'] == "pending_items"), "Unknown Items")
             
@@ -118,7 +130,7 @@ async def receive_message(body: dict):
             set_state(phone_number, "IDLE")
             return {"status": "order_finalized"}
 
-        # 5. Handle Standard Keyword Intents
+        # 6. Handle Standard Keyword Intents
         detected_intent = None
         for intent, triggers in client_keywords.items():
             if text_lower in [t.lower() for t in triggers] and intent != "order":
@@ -133,7 +145,7 @@ async def receive_message(body: dict):
                 save_message_to_db(phone_number, "assistant", formatted_reply, phone_number_id)
                 return {"status": "intent_replied"}
 
-        # 6. AI Fallback
+        # 7. AI Fallback
         system_prompt = client.get("system_prompt", "You are a helpful assistant.")
         raw_ai_reply = generate_replay(text, system_prompt, phone_number)
         formatted_ai_reply = format_whatsapp_reply(raw_ai_reply)
