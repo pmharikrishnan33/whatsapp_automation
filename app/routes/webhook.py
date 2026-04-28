@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Query, HTTPException
 from app.config import VERIFY_TOKEN
 from app.services.whatsapp import send_whatsapp_message
@@ -29,7 +30,7 @@ def verify_webhook(
 @router.post("/webhook")
 async def receive_message(body: dict):
     try:
-        # Extract metadata
+        # 1. Extract metadata
         entry = body["entry"][0]
         changes = entry["changes"][0]
         value = changes["value"]
@@ -44,38 +45,35 @@ async def receive_message(body: dict):
         text = message.get("text", {}).get("body", "")
         text_lower = text.lower().strip()
 
-        # 1. Fetch client configuration
+        # 2. Fetch client configuration
         client = get_client_config(phone_number_id)
         if not client:
             return {"status": "error", "message": "Client not found"}
 
-        # --- 2. THE CREDIT LIMIT CUTOFF ---
+        # --- 3. THE CREDIT LIMIT CUTOFF ---
         current_spend = client.get("current_month_spend", 0)
         credit_limit = client.get("monthly_credit_limit", 500) # Default to 500 if not set in DB
 
         if current_spend >= credit_limit:
-            # We save the incoming message so the client can still see what was asked,
-            # but we DO NOT call send_whatsapp_message or generate an AI reply.
+            # Save the message so the business owner can see it, but DO NOT reply.
             save_message_to_db(phone_number, "user", text, phone_number_id)
             print(f"Credit limit exceeded for {phone_number_id}. Ignoring message to prevent Meta charges.")
-            
-            # Return 200 OK so Meta doesn't retry the webhook, but no reply is sent.
             return {"status": "limit_exceeded_ignored"}
         # ----------------------------------
 
-        # 3. SILENT CREDIT MANAGEMENT (Invisible to User)
+        # 4. SILENT CREDIT MANAGEMENT (Invisible to User)
         manage_client_credit(phone_number, phone_number_id)
 
-        # 4. Save incoming message to DB
+        # 5. Save incoming message to DB
         save_message_to_db(phone_number, "user", text, phone_number_id)
 
-        # 5. Handle State-Based Order Flow
+        # 6. Handle State-Based Order Flow
         current_state = get_state(phone_number)
-
-        # Trigger Order Flow via Keyword
         client_keywords = client.get("keywords", {})
-        is_order_trigger = any(text_lower in [t.lower() for t in triggers] 
-                               for intent, triggers in client_keywords.items() if intent == "order")
+
+        # Trigger Order Flow via Regex Keyword Match
+        order_triggers = client_keywords.get("order", [])
+        is_order_trigger = any(re.search(r'\b' + re.escape(t.lower()) + r'\b', text_lower) for t in order_triggers)
 
         if is_order_trigger:
             if not client.get("order_enabled", False):
@@ -130,12 +128,13 @@ async def receive_message(body: dict):
             set_state(phone_number, "IDLE")
             return {"status": "order_finalized"}
 
-        # 6. Handle Standard Keyword Intents
+        # 7. Handle Standard Keyword Intents (Regex Partial Match Fix)
         detected_intent = None
         for intent, triggers in client_keywords.items():
-            if text_lower in [t.lower() for t in triggers] and intent != "order":
-                detected_intent = intent
-                break
+            if intent != "order":
+                if any(re.search(r'\b' + re.escape(t.lower()) + r'\b', text_lower) for t in triggers):
+                    detected_intent = intent
+                    break
 
         if detected_intent:
             raw_reply = client.get("intent_responses", {}).get(detected_intent)
@@ -145,7 +144,7 @@ async def receive_message(body: dict):
                 save_message_to_db(phone_number, "assistant", formatted_reply, phone_number_id)
                 return {"status": "intent_replied"}
 
-        # 7. AI Fallback
+        # 8. AI Fallback
         system_prompt = client.get("system_prompt", "You are a helpful assistant.")
         raw_ai_reply = generate_replay(text, system_prompt, phone_number)
         formatted_ai_reply = format_whatsapp_reply(raw_ai_reply)
