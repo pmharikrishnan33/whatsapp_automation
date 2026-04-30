@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Query, HTTPException
 from app.core.config import VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID
 from app.core.client_manager import get_client_config
 from app.modules.restaurant.handler import handle_restaurant_logic
-# from app.modules.clothing.handler import handle_clothing_logic
+from app.modules.clothing.handler import handle_clothing_logic
 
 app = FastAPI()
 
@@ -26,11 +26,14 @@ async def receive_message(body: dict):
         # 3. ROUTE BASED ON INDUSTRY
         industry = client.get("industry", "restaurant") # Default to restaurant
 
-        if industry == "restaurant":
-            await handle_restaurant_logic(client, customer_phone, text, phone_id)
-        elif industry == "clothing":
-            # await handle_clothing_logic(client, customer_phone, text, phone_id)
-            pass
+        # app/main.py inside the webhook function
+        try:
+            if industry == "restaurant":
+                await handle_restaurant_logic(client, customer_phone, text, phone_id)
+            elif industry == "clothing":
+                await handle_clothing_logic(client, customer_phone, text, phone_id)
+        except Exception as e:
+            print(f"CRASH DETECTED: {str(e)}") # This will show up in your Render logs
 
         return {"status": "success"}
 
