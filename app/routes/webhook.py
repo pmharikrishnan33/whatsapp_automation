@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, HTTPException
 from app.config import VERIFY_TOKEN
 from app.services.whatsapp import send_whatsapp_message
-from app.services.ai import generate_replay
+from app.services.ai import generate_replay, generate_receipt
 from app.services.client_mananger import get_client_config
 from app.services.memory import (
     save_message_to_db, 
@@ -89,8 +89,17 @@ async def receive_message(body: dict):
 
         # Process ongoing Order states
         if current_state == "AWAITING_ITEMS":
-            add_to_history(phone_number, "pending_items", text)
-            reply = f"Confirming your order: {text}\n\nType 'Confirm', 'Edit', or 'Cancel'."
+            # 1. Get the menu from the database so the AI knows the prices
+            menu_text = client.get("intent_responses", {}).get("view_menu", "")
+            
+            # 2. Let Gemini act as the cashier (fixes typos, does math)
+            clean_receipt = generate_receipt(text, menu_text)
+            
+            # 3. Store the CLEAN receipt in history instead of the messy text
+            add_to_history(phone_number, "pending_items", clean_receipt)
+            
+            # 4. Show the receipt to the customer
+            reply = f"Please check your order:\n\n{clean_receipt}\n\nType 'Confirm', 'Edit', or 'Cancel'."
             send_whatsapp_message(phone_number, reply)
             save_message_to_db(phone_number, "assistant", reply, phone_number_id)
             set_state(phone_number, "AWAITING_CONFIRMATION")
