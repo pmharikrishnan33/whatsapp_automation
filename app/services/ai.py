@@ -3,7 +3,7 @@ import google.generativeai as genai
 from app.services.memory import get_history
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-3-latest")
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 def generate_replay(user_message: str, system_prompt: str, phone_number: str):
     history = get_history(phone_number)
