@@ -1,6 +1,6 @@
-from app.config import GEMINI_API_KEY
+from app.core.config import GEMINI_API_KEY
 import google.generativeai as genai
-from app.services.memory import get_history
+from app.core.memory import get_history
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3.1-flash-lite-preview")

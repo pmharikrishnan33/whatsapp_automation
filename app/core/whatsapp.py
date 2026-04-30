@@ -1,5 +1,5 @@
 import requests
-from app.config import WHATSAPP_TOKEN, PHONE_NUMBER_ID
+from app.core.config import WHATSAPP_TOKEN, PHONE_NUMBER_ID
 
 def send_whatsapp_message(to: str, message: str):
 

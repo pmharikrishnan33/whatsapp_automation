@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from app.db.mongo import messages_collection, orders_collection, clients_collection
+from app.core.mongo import messages_collection, orders_collection, clients_collection
 
 # In-memory storage for non-persistent workflow states (per user)
 conversation_states = {}

@@ -1,7 +1,7 @@
 import os
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
-from app.config import MONGO_URI
+from app.core.config import MONGO_URI
 
 uri=MONGO_URI
 

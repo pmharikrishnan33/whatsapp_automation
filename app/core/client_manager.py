@@ -1,4 +1,4 @@
-from app.db.mongo import clients_collection
+from app.core.mongo import clients_collection
 
 def get_client_config(phone_number_id: str):
     # MongoDB will return all fields including order_enabled and intent_responses
