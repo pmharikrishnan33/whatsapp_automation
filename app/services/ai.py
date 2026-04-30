@@ -3,7 +3,6 @@ import google.generativeai as genai
 from app.services.memory import get_history
 
 genai.configure(api_key=GEMINI_API_KEY)
-
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 def generate_replay(user_message: str, system_prompt: str, phone_number: str):
@@ -14,7 +13,6 @@ def generate_replay(user_message: str, system_prompt: str, phone_number: str):
     prompt += f"user: {user_message}"
     response = model.generate_content(prompt)
     return response.text
-
 
 def generate_receipt(user_text: str, menu_text: str) -> str:
     """Takes messy user input, matches it to the menu, fixes typos, and calculates the total."""
