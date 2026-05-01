@@ -2,68 +2,81 @@ from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
 
 async def handle_clothing_logic(client, phone_number, text, phone_number_id):
-    # 1. Clean the incoming text
+    # 1. Clean incoming text
     user_message = text.lower().strip()
-    
-    # Save user message to your DB
     save_message_to_db(phone_number, "user", text, phone_number_id)
     
-    shop_name = client.get("name", "Zyphor Technologies")
+    # 2. Extract configuration from the database client object
+    shop_name = client.get("name", "Zyphor Apparel")
+    keywords = client.get("keywords", {})
+    intent_responses = client.get("intent_responses", {})
+    interactive_config = client.get("interactive_config", {})
+    
+    # 3. Determine the user's intent by matching words in the message
+    matched_intent = None
+    for intent, words in keywords.items():
+        if any(word in user_message for word in words):
+            matched_intent = intent
+            break
 
-    # 2. Check if the message triggers the T-shirt menu
-    if user_message == "hi" or user_message == "show me t-shirts":
+    # 4. Handle 'view_collection' specifically for the Interactive T-Shirt menu
+    if matched_intent == "view_collection":
         
-        print(f"Triggering interactive T-shirt menu for {phone_number}")
+        menu_enabled = interactive_config.get("enabled", False)
         
-        # 3. Build the payload using a DIRECT image link
-        interactive_menu = {
-            "messaging_product": "whatsapp",
-            "to": phone_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "header": {
-                    "type": "image",
-                    "image": {
-                        # Ensure this is your public, direct image link ending in .jpg or .png
-                        "link": "https://i.postimg.cc/0Nz11h8Q/men-s-t-shirt-realistic-mockup-in-different-colors-ai-generated-photo.jpg" 
+        if menu_enabled:
+            print(f"Triggering DB interactive menu for {phone_number}")
+            
+            # Fetch dynamic details from DB, use fallbacks if missing
+            img_url = interactive_config.get("image_url", "https://i.postimg.cc/0Nz11h8Q/men-s-t-shirt-realistic-mockup-in-different-colors-ai-generated-photo.jpg")
+            body_text = interactive_config.get("body_text", f"*{shop_name} Collection*\nPremium Quality | Unisex\n₹599.00")
+            
+            interactive_menu = {
+                "messaging_product": "whatsapp",
+                "to": phone_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "header": {
+                        "type": "image",
+                        "image": {"link": img_url}
+                    },
+                    "body": {"text": body_text},
+                    "action": {
+                        "buttons": [] # We will populate this from the DB
                     }
-                },
-                "body": {
-                    "text": f"*{shop_name} Premium T-Shirt*\n100% Cotton | Premium Quality | Unisex\n₹599.00"
-                },
-                "action": {
-                    "buttons": [
-                        {
-                            "type": "reply",
-                            "reply": {"id": "view_details", "title": "View Details"}
-                        },
-                        {
-                            "type": "reply",
-                            "reply": {"id": "choose_size", "title": "Choose Size"}
-                        },
-                        {
-                            "type": "reply",
-                            "reply": {"id": "add_to_cart", "title": "Add to Cart"}
-                        }
-                    ]
                 }
             }
-        }
-        
-        # 4. Send the dictionary using your updated helper function
-        send_whatsapp_message(to=phone_number, message=interactive_menu)
-        
-        # Save bot action to DB
-        save_message_to_db(phone_number, "assistant", "Sent interactive T-shirt menu", phone_number_id)
-        
-        return {"status": "success", "action": "sent_interactive_menu"}
+            
+            # Dynamically build buttons from DB (WhatsApp allows max 3)
+            db_buttons = interactive_config.get("buttons", [])
+            for btn in db_buttons[:3]: 
+                interactive_menu["interactive"]["action"]["buttons"].append({
+                    "type": "reply",
+                    "reply": {"id": btn.get("id"), "title": btn.get("title")}
+                })
+                
+            send_whatsapp_message(to=phone_number, message=interactive_menu)
+            save_message_to_db(phone_number, "assistant", "Sent DB interactive T-shirt menu", phone_number_id)
+            return {"status": "success", "action": "sent_interactive_menu"}
+            
+        else:
+            # If flag is false, send standard text response instead
+            reply_text = intent_responses.get("view_collection", "Here is our collection...")
+            send_whatsapp_message(to=phone_number, message=reply_text)
+            save_message_to_db(phone_number, "assistant", reply_text, phone_number_id)
+            return {"status": "success", "action": "sent_collection_text"}
 
-    # --- Fallback for any other message ---
+    # 5. Handle all other matched intents (greeting, size_guide, location, order)
+    elif matched_intent:
+        reply_text = intent_responses.get(matched_intent, "I'm here to help!")
+        send_whatsapp_message(to=phone_number, message=reply_text)
+        save_message_to_db(phone_number, "assistant", reply_text, phone_number_id)
+        return {"status": "success", "action": f"sent_{matched_intent}"}
+
+    # 6. Fallback if no keywords matched
     else:
-        fallback_text = f"👔 Welcome to {shop_name}! Try saying 'show me t-shirts' to see our latest collection."
-        
+        fallback_text = f"👔 Welcome to {shop_name}! Try asking to 'show clothes', check our 'location', or just say 'hi'."
         send_whatsapp_message(to=phone_number, message=fallback_text)
         save_message_to_db(phone_number, "assistant", fallback_text, phone_number_id)
-        
         return {"status": "success", "action": "sent_fallback"}
