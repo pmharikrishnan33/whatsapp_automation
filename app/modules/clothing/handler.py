@@ -1,5 +1,6 @@
 from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
+from app.services.ai import generate_replay
 
 async def handle_clothing_logic(client, phone_number, text, phone_number_id):
     # 1. Clean incoming text
@@ -76,7 +77,24 @@ async def handle_clothing_logic(client, phone_number, text, phone_number_id):
 
     # 6. Fallback if no keywords matched
     else:
-        fallback_text = f"👔 Welcome to {shop_name}! Try asking to 'show clothes', check our 'location', or just say 'hi'."
-        send_whatsapp_message(to=phone_number, message=fallback_text)
-        save_message_to_db(phone_number, "assistant", fallback_text, phone_number_id)
-        return {"status": "success", "action": "sent_fallback"}
+        print(f"No keywords matched. Routing {phone_number} to AI Fallback.")
+        
+        # Extract the AI persona from the DB, with a safe default just in case
+        system_prompt = client.get(
+            "system_prompt", 
+            f"You are a helpful fashion assistant for {shop_name}. Keep replies concise and stylish."
+        )
+        
+        # Call your AI service to generate a response. 
+        # (Assuming your AI function is asynchronous)
+        try:
+            ai_reply = await generate_replay(system_prompt=system_prompt, user_message=user_message)
+        except Exception as e:
+            print(f"AI Generation Error: {e}")
+            ai_reply = f"I'm having a little trouble thinking right now, but you can always ask to see our collection!"
+        
+        # Send the AI's custom response back to the user
+        send_whatsapp_message(to=phone_number, message=ai_reply)
+        save_message_to_db(phone_number, "assistant", ai_reply, phone_number_id)
+        
+        return {"status": "success", "action": "sent_ai_fallback"}

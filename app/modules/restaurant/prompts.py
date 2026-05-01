@@ -32,3 +32,27 @@ Format:
 [Item Name] x [Quantity]: [Price]
 Total: [Final Sum]
 """
+
+# app/modules/restaurant/prompts.py
+
+def build_receipt_prompt(user_text: str, menu_text: str) -> str:
+    """Generates the prompt specifically for the restaurant receipt task."""
+    return f"""
+    You are a highly accurate restaurant cashier AI. 
+    The customer is ordering from this menu (which includes prices):
+    {menu_text}
+    
+    The customer typed this messy text: "{user_text}"
+    
+    Task:
+    1. Identify the items and quantities the customer wants. 
+    2. Fix any spelling mistakes (e.g., if they say 'cladsic', map it to 'Classic Smash').
+    3. Calculate the total price based on the menu provided.
+    4. Return ONLY a clean, formatted receipt. Do not add conversational text.
+    
+    Format example:
+    1x The Classic Smash - ₹150
+    2x Truffle Fries - ₹200
+    ---
+    Total: ₹350
+    """
