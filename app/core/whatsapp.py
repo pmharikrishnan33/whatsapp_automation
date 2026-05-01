@@ -2,7 +2,6 @@ import requests
 from typing import Union
 from app.core.config import WHATSAPP_TOKEN, PHONE_NUMBER_ID
 
-# Updated type hint to accept both string and dict
 def send_whatsapp_message(to: str, message: Union[str, dict]):
 
     print("=== SENDING WHATSAPP MESSAGE ===")
