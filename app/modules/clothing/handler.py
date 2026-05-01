@@ -26,7 +26,7 @@ async def handle_clothing_logic(client, phone_number, text, phone_number_id):
                     "type": "image",
                     "image": {
                         # Ensure this is your public, direct image link ending in .jpg or .png
-                        "link": "https://raw.githubusercontent.com/zyphor/assets/main/zyphor-black-tshirt.jpg" 
+                        "link": "https://i.postimg.cc/zD0bxRP7/shopping.webp" 
                     }
                 },
                 "body": {
