@@ -6,68 +6,73 @@ from app.services.ai import run_custom_prompt
 from app.modules.clothing.prompts import CLOTHING_SYSTEM_PROMPT
 
 def find_manual_intent(user_message, client_data):
-    """
-    Checks for exact keyword matches using word boundaries.
-    Ensures 'hi' matches but 'hike' does not.
-    """
+    """Checks for exact keyword matches with word boundaries."""
     keywords_config = client_data.get("keywords", {})
     user_message = user_message.lower().strip()
-
     for intent, keywords in keywords_config.items():
         for word in keywords:
-            # \b matches word boundaries only
+            # \b ensures 'hi' matches but 'hike' does not
             pattern = rf"\b{re.escape(word.lower())}\b"
             if re.search(pattern, user_message):
                 return intent
     return None
 
 async def handle_clothing_logic(client, phone_number, text, phone_number_id):
-    """
-    Hybrid Handler: Manual Keyword Check -> AI Intent Extraction -> State Machine.
-    """
-    # 1. Log User Message
+    # 1. Log incoming message to DB
     save_message_to_db(phone_number, "user", text, phone_number_id)
     
-    # 2. STEP 1: MANUAL KEYWORD CHECK (Saves AI Cost)
+    # 2. Check for Manual Intent (Keyword Match)
     manual_intent = find_manual_intent(text, client)
-    
-    if manual_intent:
-        responses = client.get("intent_responses", {})
-        reply = responses.get(manual_intent)
+    intent = None
+
+    # 3. If no manual intent, fallback to AI for extraction
+    if not manual_intent:
+        ai_query = f"{CLOTHING_SYSTEM_PROMPT}\n\nUser Message: {text}"
+        ai_raw = run_custom_prompt(ai_query)
+        try:
+            # Clean AI response and parse JSON
+            clean_json = ai_raw.replace('```json', '').replace('```', '').strip()
+            ai_data = json.loads(clean_json)
+            intent = ai_data.get("intent")
+        except Exception as e:
+            print(f"AI Parsing Error: {e}")
+            intent = "UNKNOWN"
+    else:
+        intent = manual_intent
+
+    # 4. DYNAMIC UI LOGIC: Generate catalog from DB products
+    if intent in ["view_collection", "SHOW_PRODUCTS", "FILTER_PRICE"]:
+        products = client.get("products", [])
         
-        if reply:
+        if not products:
+            reply = "Our catalog is currently being updated. Check back soon!"
             send_whatsapp_message(phone_number, reply)
-            save_message_to_db(phone_number, "assistant", reply, phone_number_id)
-            return {"status": "manual_match", "intent": manual_intent}
+            return {"status": "no_products"}
 
-    # 3. STEP 2: AI FALLBACK (For complex queries like 'tshirt under 500')
-    ai_query = f"{CLOTHING_SYSTEM_PROMPT}\n\nUser Message: {text}"
-    ai_raw_response = run_custom_prompt(ai_query) #
-    
-    try:
-        clean_json = ai_raw_response.replace('```json', '').replace('```', '').strip()
-        ai_data = json.loads(clean_json)
-    except:
-        ai_data = {"intent": "UNKNOWN"}
+        # Build product list string dynamically from your DB products array
+        product_list_text = f"👕 *{client.get('name', 'Zyphor Apparel')} Collection*\n\n"
+        for i, prod in enumerate(products[:3], 1):  # Meta allows max 3 buttons
+            product_list_text += f"{i}. {prod['name']} - ₹{prod['price']}\n"
 
-    intent = ai_data.get("intent")
-    shop_name = client.get("name", "Zyphor Apparel")
+        # Use the first product's image_url from your DB for the header
+        # Fallback to a default if the first product has no image
+        header_image = products[0].get("image_url") if products else None
+        if not header_image:
+            header_image = "https://i.postimg.cc/zD0bxRP7/shopping.webp"
 
-    # 4. STEP 3: STATE MACHINE LOGIC (Handles interactive flows)[cite: 1]
-    
-    # Intent: VIEW COLLECTION / FILTER PRICE
-    if intent in ["SHOW_PRODUCTS", "FILTER_PRICE", "view_collection"]:
-        max_p = ai_data.get("max_price")
-        header_text = f"Top Picks Under ₹{max_p}" if max_p else "Zyphor Collection"
-        
-        product_payload = {
+        catalog_payload = {
             "messaging_product": "whatsapp",
             "to": phone_number,
             "type": "interactive",
             "interactive": {
                 "type": "button",
-                "header": {"type": "image", "image": {"link": "https://i.postimg.cc/zD0bxRP7/shopping.webp"}},
-                "body": {"text": f"👕 *{header_text}*\n\n1. Premium T-Shirt - ₹599\n2. Slim Fit Chinos - ₹1500\n3. Denim Jeans - ₹1200"},
+                "header": {
+                    "type": "image",
+                    "image": {"link": header_image}
+                },
+                "body": {
+                    "text": product_list_text
+                },
                 "action": {
                     "buttons": [
                         {"type": "reply", "reply": {"id": "select_1", "title": "Select #1"}},
@@ -77,31 +82,21 @@ async def handle_clothing_logic(client, phone_number, text, phone_number_id):
                 }
             }
         }
-        send_whatsapp_message(phone_number, product_payload)
-        save_message_to_db(phone_number, "assistant", "Sent interactive catalog", phone_number_id)
+        
+        send_whatsapp_message(phone_number, catalog_payload)
+        save_message_to_db(phone_number, "assistant", "Sent Dynamic Catalog UI", phone_number_id)
+        return {"status": "ui_sent", "intent": intent}
 
-    # Intent: SELECTION & SIZE
-    elif intent == "SELECT_PRODUCT" or "select_" in text.lower():
-        reply = "Great choice! 👕 What size do you need? (S, M, L, XL)"
+    # 5. Handle simple text responses from DB (e.g., location, size_guide)
+    elif manual_intent and manual_intent in client.get("intent_responses", {}):
+        reply = client["intent_responses"][manual_intent]
         send_whatsapp_message(phone_number, reply)
         save_message_to_db(phone_number, "assistant", reply, phone_number_id)
+        return {"status": "manual_text_sent", "intent": manual_intent}
 
-    # Intent: QUANTITY
-    elif text.upper() in ["S", "M", "L", "XL"]:
-        reply = f"Size {text.upper()} confirmed. How many units do you want?"
-        send_whatsapp_message(phone_number, reply)
-        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
-
-    # Intent: ORDER CONFIRMATION
-    elif text.isdigit() and int(text) < 10:
-        reply = f"✅ Confirm order for {text} items?\nReply 'YES' to finalize."
-        send_whatsapp_message(phone_number, reply)
-        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
-
-    # Final Fallback: AI Conversational Chat[cite: 1]
+    # 6. Fallback for unknown input
     else:
-        fallback = "I didn't quite get that. Try 'show collection' or 'shirts under 1000'!"
+        fallback = "I'm here to help! Try saying 'show collection' or ask for our store 'location'."
         send_whatsapp_message(phone_number, fallback)
         save_message_to_db(phone_number, "assistant", fallback, phone_number_id)
-
-    return {"status": "success", "intent": intent}
+        return {"status": "fallback_sent"}
