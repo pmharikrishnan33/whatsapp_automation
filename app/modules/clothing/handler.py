@@ -2,91 +2,114 @@ import re
 import json
 from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
-from app.services.ai import run_custom_prompt, generate_replay  #
+from app.services.ai import run_custom_prompt, generate_replay
 from app.modules.clothing.prompts import CLOTHING_SYSTEM_PROMPT
 
-def find_manual_intent(user_message, client_data):
-    """Checks for exact keyword matches with word boundaries."""
-    keywords_config = client_data.get("keywords", {})
-    user_message = user_message.lower().strip()
-    for intent, keywords in keywords_config.items():
-        for word in keywords:
-            pattern = rf"\b{re.escape(word.lower())}\b"
-            if re.search(pattern, user_message):
-                return intent
+def extract_price_rule_based(text: str):
+    """Regex-based extraction to handle 90% of price queries for FREE."""
+    patterns = [
+        r'(?:under|below|less than|lower than|<=?)\s*(\d+)',
+        r'(\d+)\s*(?:below|under|thazhe)', 
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            return int(match.group(1))
+    return None
+
+def detect_category_signal(user_msg, client_data):
+    """Checks the categories dictionary in keywords to find a match."""
+    categories_map = client_data.get("keywords", {}).get("categories", {})
+    user_msg = user_msg.lower().strip()
+    
+    for category_name, synonyms in categories_map.items():
+        for word in synonyms:
+            if rf"\b{re.escape(word.lower())}\b" in user_msg:
+                return category_name
     return None
 
 async def handle_clothing_logic(client, phone_number, text, phone_number_id):
     # 1. Log incoming message
     save_message_to_db(phone_number, "user", text, phone_number_id)
+    user_msg_low = text.lower().strip()
     
-    # 2. Check for Manual Intent (Keyword Match)
-    manual_intent = find_manual_intent(text, client)
-    intent = None
+    # 2. LOAD FEATURE FLAGS & UI CONFIG
+    features = client.get("features", {})
+    ui_config = client.get("ui", {})
+    
+    # 3. SIGNAL COLLECTION
+    detected_category = detect_category_signal(user_msg_low, client)
+    max_price = extract_price_rule_based(user_msg_low)
+    
+    # Identify if it's a general collection request
+    is_collection_request = any(w in user_msg_low for w in client.get("keywords", {}).get("view_collection", []))
 
-    # 3. If no manual intent, use AI for structured extraction
-    if not manual_intent:
-        ai_query = f"{CLOTHING_SYSTEM_PROMPT}\n\nUser Message: {text}"
-        ai_raw = run_custom_prompt(ai_query) #
-        try:
-            clean_json = ai_raw.replace('```json', '').replace('```', '').strip()
-            ai_data = json.loads(clean_json)
-            intent = ai_data.get("intent")
-        except:
-            intent = "UNKNOWN"
-    else:
-        intent = manual_intent
+    # 4. AI FALLBACK (Only if features allow and signals are missing)
+    if features.get("ai_fallback") and not (detected_category or max_price):
+        if len(user_msg_low) > 10: # Only trigger AI for longer, complex phrases
+            ai_query = f"{CLOTHING_SYSTEM_PROMPT}\n\nUser Message: {text}"
+            ai_raw = run_custom_prompt(ai_query)
+            try:
+                ai_data = json.loads(ai_raw.replace('```json', '').replace('```', '').strip())
+                max_price = max_price or ai_data.get("max_price")
+                if ai_data.get("intent") in ["SHOW_PRODUCTS", "FILTER_PRICE"]:
+                    is_collection_request = True
+            except:
+                pass
 
-    # 4. DYNAMIC UI LOGIC: Generate catalog from DB products
-    if intent in ["view_collection", "SHOW_PRODUCTS", "FILTER_PRICE"]:
-        products = client.get("products", [])
-        if not products:
-            reply = "Our catalog is currently being updated."
-            send_whatsapp_message(phone_number, reply)
-            return {"status": "no_products"}
+    # 5. EXECUTE FILTERED CATALOG LOGIC
+    if features.get("catalog_enabled") and (detected_category or max_price or is_collection_request or user_msg_low == "hi"):
+        all_products = client.get("products", [])
+        
+        # Filter products based on signals
+        filtered = all_products
+        if max_price:
+            filtered = [p for p in filtered if p['price'] <= max_price]
+        if detected_category:
+            filtered = [p for p in filtered if p.get('category') == detected_category]
 
-        product_list_text = f"👕 *{client.get('name', 'Zyphor Apparel')} Collection*\n\n"
-        for i, prod in enumerate(products[:3], 1):
-            product_list_text += f"{i}. {prod['name']} - ₹{prod['price']}\n"
+        if filtered:
+            # Build Text Body
+            currency = ui_config.get("currency", "₹")
+            max_items = ui_config.get("max_items_per_message", 3)
+            
+            body_text = f"👕 *{client.get('name')} Collection*\n"
+            if max_price: body_text += f"_(Budget: {currency}{max_price})_\n"
+            body_text += "\n"
+            
+            for i, prod in enumerate(filtered[:max_items], 1):
+                body_text += f"{i}. {prod['name']} - {currency}{prod['price']}\n"
 
-        header_image = products[0].get("image_url", "https://i.postimg.cc/zD0bxRP7/shopping.webp")
-
-        catalog_payload = {
-            "messaging_product": "whatsapp",
-            "to": phone_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "header": {"type": "image", "image": {"link": header_image}},
-                "body": {"text": product_list_text},
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": "select_1", "title": "Select #1"}},
-                        {"type": "reply", "reply": {"id": "show_more", "title": "Show More"}},
-                        {"type": "reply", "reply": {"id": "main_menu", "title": "Main Menu"}}
-                    ]
+            # Check if we should use Buttons or Text
+            if features.get("buttons_enabled"):
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone_number,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button",
+                        "header": {"type": "image", "image": {"link": filtered[0]['image_url']}},
+                        "body": {"text": body_text},
+                        "action": {
+                            "buttons": [
+                                {"type": "reply", "reply": {"id": "select_1", "title": "Select #1"}},
+                                {"type": "reply", "reply": {"id": "main_menu", "title": "Main Menu"}}
+                            ]
+                        }
+                    }
                 }
-            }
-        }
-        send_whatsapp_message(phone_number, catalog_payload)
-        save_message_to_db(phone_number, "assistant", "Sent Dynamic Catalog UI", phone_number_id)
-        return {"status": "ui_sent"}
+                send_whatsapp_message(phone_number, payload)
+            else:
+                # Fallback to plain text if buttons are disabled
+                send_whatsapp_message(phone_number, body_text)
+            
+            save_message_to_db(phone_number, "assistant", body_text, phone_number_id)
+            return {"status": "catalog_sent"}
 
-    # 5. Handle simple text responses from DB (e.g. Size Guide)
-    elif manual_intent and manual_intent in client.get("intent_responses", {}):
-        reply = client["intent_responses"][manual_intent]
-        send_whatsapp_message(phone_number, reply)
-        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
-        return {"status": "manual_text_sent"}
-
-    # 6. CONVERSATIONAL FALLBACK: Handles "What is M?" or "M means?"
-    else:
-        # Use your system_prompt from the DB
-        system_instructions = client.get("system_prompt", "You are Stitch, the fashion assistant for Zyphor Apparel.")
-        
-        # Use your conversational function that pulls history
-        ai_conversational_reply = generate_replay(text, system_instructions, phone_number) #
-        
-        send_whatsapp_message(phone_number, ai_conversational_reply)
-        save_message_to_db(phone_number, "assistant", ai_conversational_reply, phone_number_id)
-        return {"status": "ai_conversation_sent"}
+    # 6. CONVERSATIONAL AI (Answer questions like "M means?")
+    system_prompt = client.get("system_prompt", "You are Stitch for Zyphor Apparel.")
+    ai_reply = generate_replay(text, system_prompt, phone_number)
+    send_whatsapp_message(phone_number, ai_reply)
+    save_message_to_db(phone_number, "assistant", ai_reply, phone_number_id)
+    
+    return {"status": "conversational_complete"}
