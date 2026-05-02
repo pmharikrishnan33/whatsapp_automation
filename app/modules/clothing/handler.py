@@ -1,117 +1,107 @@
 import re
+import json
 from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
-from app.services.ai import generate_replay
+from app.services.ai import run_custom_prompt
+from app.modules.clothing.prompt import CLOTHING_SYSTEM_PROMPT
+
+def find_manual_intent(user_message, client_data):
+    """
+    Checks for exact keyword matches using word boundaries.
+    Ensures 'hi' matches but 'hike' does not.
+    """
+    keywords_config = client_data.get("keywords", {})
+    user_message = user_message.lower().strip()
+
+    for intent, keywords in keywords_config.items():
+        for word in keywords:
+            # \b matches word boundaries only
+            pattern = rf"\b{re.escape(word.lower())}\b"
+            if re.search(pattern, user_message):
+                return intent
+    return None
 
 async def handle_clothing_logic(client, phone_number, text, phone_number_id):
-    # 1. Clean incoming text & Save to DB[cite: 1]
-    user_message = text.lower().strip()
+    """
+    Hybrid Handler: Manual Keyword Check -> AI Intent Extraction -> State Machine.
+    """
+    # 1. Log User Message
     save_message_to_db(phone_number, "user", text, phone_number_id)
     
-    # 2. Extract DB Configurations[cite: 1]
-    shop_name = client.get("name", "Zyphor Apparel")
-    keywords = client.get("keywords", {})
-    intent_responses = client.get("intent_responses", {})
+    # 2. STEP 1: MANUAL KEYWORD CHECK (Saves AI Cost)
+    manual_intent = find_manual_intent(text, client)
     
-    # 3. Determine the user's intent by matching words in the message[cite: 1]
-    matched_intent = None
-    for intent, words in keywords.items():
-        if any(word in user_message for word in words):
-            matched_intent = intent
-            break
-
-    # ---------------------------------------------------------
-    # 4. INTENT: VIEW COLLECTION (With Category & Price Filters)
-    # ---------------------------------------------------------
-    if matched_intent == "view_collection":
-        print(f"Triggering collection menu for {phone_number}")
+    if manual_intent:
+        responses = client.get("intent_responses", {})
+        reply = responses.get(manual_intent)
         
-        all_products = client.get("products", [])
-        filtered_products = all_products
-        
-        # --- A. Category Filtering ---
-        target_category = None
-        if any(word in user_message for word in ["shirt", "tshirt", "tee", "t-shirt"]):
-            target_category = "shirt"
-        elif any(word in user_message for word in ["pant", "jeans", "chinos", "trousers"]):
-            target_category = "pant"
-            
-        if target_category:
-            filtered_products = [p for p in filtered_products if p.get("category") == target_category]
-
-        # --- B. Price Filtering (Regex) ---
-        price_limit = None
-        if "under" in user_message or "below" in user_message:
-            numbers = re.findall(r'\d+', user_message)
-            if numbers:
-                price_limit = int(numbers[0])
-                
-        if price_limit:
-            filtered_products = [p for p in filtered_products if p.get("price", 0) <= price_limit]
-
-        # --- C. Generate the Reply ---
-        if not filtered_products:
-            reply = "Sorry, we don't have exactly what you're looking for right now. Try adjusting your search!"
-            send_whatsapp_message(to=phone_number, message=reply)
+        if reply:
+            send_whatsapp_message(phone_number, reply)
             save_message_to_db(phone_number, "assistant", reply, phone_number_id)
-            return {"status": "no_products_found"}
+            return {"status": "manual_match", "intent": manual_intent}
 
-        item_type = target_category + "s" if target_category else "items"
-        intro_text = f"Here are our best {item_type} under ₹{price_limit}:" if price_limit else f"Here is our latest collection of {item_type}:"
+    # 3. STEP 2: AI FALLBACK (For complex queries like 'tshirt under 500')
+    ai_query = f"{CLOTHING_SYSTEM_PROMPT}\n\nUser Message: {text}"
+    ai_raw_response = run_custom_prompt(ai_query) #
+    
+    try:
+        clean_json = ai_raw_response.replace('```json', '').replace('```', '').strip()
+        ai_data = json.loads(clean_json)
+    except:
+        ai_data = {"intent": "UNKNOWN"}
 
-        send_whatsapp_message(to=phone_number, message=intro_text)
+    intent = ai_data.get("intent")
+    shop_name = client.get("name", "Zyphor Apparel")
 
-        # --- D. Send Interactive Messages (Max 3 to prevent spam triggers) ---
-        for product in filtered_products[:3]:
-            interactive_menu = {
-                "messaging_product": "whatsapp",
-                "to": phone_number,
-                "type": "interactive",
-                "interactive": {
-                    "type": "button",
-                    "header": {
-                        "type": "image",
-                        "image": {"link": product["image_url"]}
-                    },
-                    "body": {
-                        "text": f"*{product['name']}*\nPremium Quality | Unisex\n₹{product['price']}.00"
-                    },
-                    "action": {
-                        "buttons": [
-                            {"type": "reply", "reply": {"id": f"details_{product['id']}", "title": "View Details"}},
-                            {"type": "reply", "reply": {"id": f"size_{product['id']}", "title": "Choose Size"}},
-                            {"type": "reply", "reply": {"id": f"cart_{product['id']}", "title": "Add to Cart"}}
-                        ]
-                    }
+    # 4. STEP 3: STATE MACHINE LOGIC (Handles interactive flows)[cite: 1]
+    
+    # Intent: VIEW COLLECTION / FILTER PRICE
+    if intent in ["SHOW_PRODUCTS", "FILTER_PRICE", "view_collection"]:
+        max_p = ai_data.get("max_price")
+        header_text = f"Top Picks Under ₹{max_p}" if max_p else "Zyphor Collection"
+        
+        product_payload = {
+            "messaging_product": "whatsapp",
+            "to": phone_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "header": {"type": "image", "image": {"link": "https://i.postimg.cc/zD0bxRP7/shopping.webp"}},
+                "body": {"text": f"👕 *{header_text}*\n\n1. Premium T-Shirt - ₹599\n2. Slim Fit Chinos - ₹1500\n3. Denim Jeans - ₹1200"},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "select_1", "title": "Select #1"}},
+                        {"type": "reply", "reply": {"id": "show_more", "title": "Show More"}},
+                        {"type": "reply", "reply": {"id": "main_menu", "title": "Main Menu"}}
+                    ]
                 }
             }
-            send_whatsapp_message(to=phone_number, message=interactive_menu)
-            
-        save_message_to_db(phone_number, "assistant", f"Sent {len(filtered_products[:3])} products", phone_number_id)
-        return {"status": "success", "action": "sent_filtered_collection"}
+        }
+        send_whatsapp_message(phone_number, product_payload)
+        save_message_to_db(phone_number, "assistant", "Sent interactive catalog", phone_number_id)
 
-    # ---------------------------------------------------------
-    # 5. INTENT: STANDARD KEYWORDS (Greetings, Size, Location)
-    # ---------------------------------------------------------
-    elif matched_intent:
-        reply_text = intent_responses.get(matched_intent, "I'm here to help!")
-        send_whatsapp_message(to=phone_number, message=reply_text)
-        save_message_to_db(phone_number, "assistant", reply_text, phone_number_id)
-        return {"status": "success", "action": f"sent_{matched_intent}"}
+    # Intent: SELECTION & SIZE
+    elif intent == "SELECT_PRODUCT" or "select_" in text.lower():
+        reply = "Great choice! 👕 What size do you need? (S, M, L, XL)"
+        send_whatsapp_message(phone_number, reply)
+        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
 
-    # ---------------------------------------------------------
-    # 6. NO INTENT MATCHED: AI CHAT FALLBACK
-    # ---------------------------------------------------------
+    # Intent: QUANTITY
+    elif text.upper() in ["S", "M", "L", "XL"]:
+        reply = f"Size {text.upper()} confirmed. How many units do you want?"
+        send_whatsapp_message(phone_number, reply)
+        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
+
+    # Intent: ORDER CONFIRMATION
+    elif text.isdigit() and int(text) < 10:
+        reply = f"✅ Confirm order for {text} items?\nReply 'YES' to finalize."
+        send_whatsapp_message(phone_number, reply)
+        save_message_to_db(phone_number, "assistant", reply, phone_number_id)
+
+    # Final Fallback: AI Conversational Chat[cite: 1]
     else:
-        print(f"No keywords matched. Routing {phone_number} to AI Fallback.")
-        system_prompt = client.get("system_prompt", f"You are a fashion assistant for {shop_name}. Keep replies concise and stylish.")
-        
-        try:
-            ai_reply = generate_replay(system_prompt=system_prompt, user_message=user_message, phone_number=phone_number)
-        except Exception as e:
-            print(f"AI Chat Error: {e}")
-            ai_reply = "I'm having a little trouble thinking right now, but you can always ask to see our collection!"
-        
-        send_whatsapp_message(to=phone_number, message=ai_reply)
-        save_message_to_db(phone_number, "assistant", ai_reply, phone_number_id)
-        return {"status": "success", "action": "sent_ai_fallback"}
+        fallback = "I didn't quite get that. Try 'show collection' or 'shirts under 1000'!"
+        send_whatsapp_message(phone_number, fallback)
+        save_message_to_db(phone_number, "assistant", fallback, phone_number_id)
+
+    return {"status": "success", "intent": intent}
