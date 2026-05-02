@@ -3,7 +3,7 @@ import json
 from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
 from app.services.ai import run_custom_prompt
-from app.modules.clothing.prompt import CLOTHING_SYSTEM_PROMPT
+from app.modules.clothing.prompts import CLOTHING_SYSTEM_PROMPT
 
 def find_manual_intent(user_message, client_data):
     """
