@@ -39,7 +39,7 @@ async def handle_clothing_logic(client, phone_number, text, phone_number_id):
     if is_greeting and not (detected_cat or max_price):
         reply = client.get("intent_responses", {}).get("greeting")
         if reply:
-            send_whatsapp_message(phone_number, reply, phone_number_id)
+            send_whatsapp_message(phone_number, reply)
             save_message_to_db(phone_number, "assistant", reply, phone_number_id)
             return {"status": "greeting_sent"}
 
@@ -58,16 +58,16 @@ async def handle_clothing_logic(client, phone_number, text, phone_number_id):
             for i, p in enumerate(filtered[:3], 1):
                 body += f"*{i}. {p['name']}*\n💰 {currency}{p['price']}\n📝 {p.get('description', '')}\n\n"
             
-            send_whatsapp_message(phone_number, body, phone_number_id)
+            send_whatsapp_message(phone_number, body)
             return {"status": "catalog_sent"}
         else:
             # Suggest available categories[cite: 1]
             avail = ", ".join(keywords.get("categories", {}).keys())
             reply = f"Not in stock. Try our available categories: *{avail}*"
-            send_whatsapp_message(phone_number, reply, phone_number_id)
+            send_whatsapp_message(phone_number, reply)
             return {"status": "not_available"}
 
     # 3. AI Fallback
     ai_reply = generate_replay(text, client.get("system_prompt"), phone_number)
-    send_whatsapp_message(phone_number, ai_reply, phone_number_id)
+    send_whatsapp_message(phone_number, ai_reply)
     return {"status": "ai_reply_sent"}
