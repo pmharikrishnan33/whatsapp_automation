@@ -3,101 +3,103 @@ from app.core.whatsapp import send_whatsapp_message
 from app.core.memory import save_message_to_db
 from app.services.ai import generate_replay
 
-def detect_signal(text, keyword_list):
-    """Helper to match keywords using regex word boundaries."""
-    for word in keyword_list:
-        if re.search(rf"\b{re.escape(word.lower())}\b", text.lower()):
-            return True
-    return False
+# --- MANUAL RULE CHECKS ---
 
-def extract_price_filter(text):
-    """Detects price signals like 'under 1000' or 'below 500'."""
-    patterns = [r'(?:under|below|less than|<=?)\s*(\d+)', r'(\d+)\s*(?:below|under)']
-    for pattern in patterns:
-        match = re.search(pattern, text.lower())
-        if match:
-            return int(match.group(1))
+def get_manual_category(text, categories_map):
+    """Manual Check: Exact word boundary matching for categories."""
+    for cat_name, synonyms in categories_map.items():
+        for word in synonyms:
+            if re.search(rf"\b{re.escape(word.lower())}\b", text.lower()):
+                return cat_name
     return None
 
-async def handle_clothing_logic(client, phone_number, text, phone_number_id):
-    # 1. Initialize variables from JSON config
-    user_msg = text.lower().strip()
-    ui = client.get("ui", {})
-    currency = ui.get("currency", "₹")
-    max_items = ui.get("max_items_per_message", 3)
-    features = client.get("features", {})
-    
+def get_manual_price(text):
+    """Manual Check: Regex for price extraction (e.g., 'under 600')."""
+    match = re.search(r'(?:under|below|less than|<=?)\s*(\d+)', text.lower())
+    return int(match.group(1)) if match else None
+
+# --- MAIN LOGIC ---
+
+async def handle_clothing_logic(client, phone_number, message_data, phone_number_id):
     keywords = client.get("keywords", {})
-    categories_map = keywords.get("categories", {})
     
-    # 2. Extract User Intent
-    is_greeting = detect_signal(user_msg, keywords.get("greeting", []))
-    is_collection_req = detect_signal(user_msg, keywords.get("view_collection", []))
-    max_price = extract_price_filter(user_msg)
-    
-    # Detect specific category
-    detected_cat = None
-    for cat_name, synonyms in categories_map.items():
-        if detect_signal(user_msg, synonyms):
-            detected_cat = cat_name
-            break
+    # 1. CHECK FOR BUTTON INTERACTION (Pagination)
+    if message_data.startswith("more_"):
+        # Pattern: more_{category}_{price}_{offset}
+        _, cat, prc, off = message_data.split("_")
+        return await send_catalog_ui(
+            client, phone_number, phone_number_id, 
+            category=None if cat == "none" else cat,
+            max_price=None if prc == "none" else int(prc),
+            offset=int(off)
+        )
 
-    # 3. Decision Tree Logic
-    
-    # CASE A: Greeting (Only if no specific product/category mentioned)
-    if is_greeting and not (detected_cat or is_collection_req):
-        reply = client.get("intent_responses", {}).get("greeting", "Hello! How can I help you today?")
-        return await finalize_response(phone_number, reply, phone_number_id, "greeting")
+    # 2. MANUAL INTENT CHECKING
+    user_text = message_data.lower().strip()
+    detected_cat = get_manual_category(user_text, keywords.get("categories", {}))
+    max_price = get_manual_price(user_text)
 
-    # CASE B: View All Collection / List Categories
-    if is_collection_req and not detected_cat:
-        avail_cats = ", ".join([c.capitalize() for c in categories_map.keys()])
-        reply = f"🛍️ *Our Collections*\n\nWe have a wide range of:\n* {avail_cats.replace(', ', '\n* ')}\n\n_Type a category name (e.g., 'Show shirts') to see products!_"
-        return await finalize_response(phone_number, reply, phone_number_id, "collection_list")
-
-    # CASE C: Product Filtering (Category and/or Price)
+    # RULE: If user mentions a product/price, bypass greeting and show catalog
     if detected_cat or max_price:
-        products = client.get("products", [])
-        
-        # Filter logic
-        filtered = [
-            p for p in products 
-            if (not detected_cat or p["category"] == detected_cat) 
-            and (not max_price or p["price"] <= max_price)
-        ]
+        return await send_catalog_ui(client, phone_number, phone_number_id, detected_cat, max_price, 0)
 
-        if filtered:
-            header = f"👕 *{client.get('name')} - {detected_cat.capitalize() if detected_cat else 'Deals'}*\n"
-            if max_price:
-                header += f"_(Budget: {currency}{max_price})_\n"
-            header += "__________________________\n\n"
-            
-            body = header
-            # Respect max_items_per_message from JSON
-            for i, p in enumerate(filtered[:max_items], 1):
-                body += f"*{i}. {p['name']}*\n"
-                body += f"💰 {currency}{p['price']}\n"
-                body += f"📝 {p.get('description', '')}\n\n"
-            
-            if len(filtered) > max_items:
-                body += f"_+ {len(filtered) - max_items} more items available!_"
+    # 3. GREETING CHECK (Only if no product intent found)
+    if any(re.search(rf"\b{re.escape(w)}\b", user_text) for w in keywords.get("greeting", [])):
+        reply = client.get("intent_responses", {}).get("greeting")
+        return await finalize(phone_number, reply, phone_number_id, "greeting")
 
-            return await finalize_response(phone_number, body, phone_number_id, "catalog_sent")
-        else:
-            # Fallback for no matches
-            reply = f"Sorry, we don't have items matching that criteria right now. Check out our other categories!"
-            return await finalize_response(phone_number, reply, phone_number_id, "no_match")
+    # 4. AI FALLBACK (Last Resort)
+    if client.get("features", {}).get("ai_fallback"):
+        ai_reply = generate_replay(message_data, client.get("system_prompt"), phone_number)
+        return await finalize(phone_number, ai_reply, phone_number_id, "ai_fallback")
 
-    # CASE D: AI Fallback
-    if features.get("ai_fallback"):
-        ai_reply = generate_replay(text, client.get("system_prompt"), phone_number)
-        return await finalize_response(phone_number, ai_reply, phone_number_id, "ai_reply")
+    return {"status": "unhandled"}
 
-    return {"status": "no_action"}
+# --- CATALOG UI & PAGINATION ENGINE ---
 
-async def finalize_response(phone_number, text, phone_id, status):
-    """Helper to send, save, and log the response."""
-    result = send_whatsapp_message(phone_number, text)
-    print(f"[{status.upper()}] Result:", result)
-    save_message_to_db(phone_number, "assistant", text, phone_id)
+async def send_catalog_ui(client, phone_number, phone_id, category, max_price, offset):
+    products = client.get("products", [])
+    currency = client.get("ui", {}).get("currency", "₹")
+    limit = client.get("ui", {}).get("max_items_per_message", 3)
+
+    # Filter logic
+    filtered = [
+        p for p in products 
+        if (not category or p["category"] == category) and (not max_price or p["price"] <= max_price)
+    ]
+
+    if not filtered:
+        return await finalize(phone_number, "No items found matching your request.", phone_id, "no_results")
+
+    # Slice for pagination
+    page_items = filtered[offset : offset + limit]
+    
+    # Build UI
+    ui_text = f"👕 *{client['name']} Selection*\n"
+    if category: ui_text += f"Type: {category.capitalize()}\n"
+    if max_price: ui_text += f"Budget: {currency}{max_price}\n"
+    ui_text += "__________________________\n\n"
+
+    for p in page_items:
+        ui_text += f"*{p['name']}*\n"
+        ui_text += f"💰 {currency}{p['price']}\n"
+        ui_text += f"📝 {p['description']}\n"
+        ui_text += f"🔗 {p['image_url']}\n\n"
+
+    # Button Logic
+    btns = None
+    next_offset = offset + limit
+    if next_offset < len(filtered):
+        # Store state in button ID for the next request
+        state_id = f"more_{category if category else 'none'}_{max_price if max_price else 'none'}_{next_offset}"
+        btns = [{"id": state_id, "title": "⬇️ View More"}]
+        ui_text += f"_+{len(filtered) - next_offset} more items available._"
+    else:
+        ui_text += "✅ *You've seen everything in this category!*"
+
+    return await finalize(phone_number, ui_text, phone_id, "catalog_page", btns)
+
+async def finalize(phone_num, text, phone_id, status, buttons=None):
+    send_whatsapp_message(phone_num, text, buttons)
+    save_message_to_db(phone_num, "assistant", text, phone_id)
     return {"status": status}

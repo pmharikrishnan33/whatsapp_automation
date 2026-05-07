@@ -1,55 +1,51 @@
 from fastapi import FastAPI, Request, Query, HTTPException
-from app.core.config import VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID
+from app.core.config import VERIFY_TOKEN
 from app.core.client_manager import get_client_config
-from app.modules.restaurant.handler import handle_restaurant_logic
 from app.modules.clothing.handler import handle_clothing_logic
 
 app = FastAPI()
 
 @app.post("/webhook")
-async def receive_message(body: dict):
+async def webhook(request: Request):
+    body = await request.json()
+    
     try:
-        value = body["entry"][0]["changes"][0]["value"]
-        messages = value.get("messages")
-        if not messages: 
-            return {"status": "no message"}
+        entry = body.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
 
-        message = messages[0]
-        customer_phone = message["from"]
-        phone_id = value.get("metadata", {}).get("phone_number_id")
-        text = message.get("text", {}).get("body", "")
+        if not messages:
+            return {"status": "ignored"}
 
-        print(f"👉 INCOMING MSG: {text} | TO PHONE ID: {phone_id}") # DEBUG 1
+        msg = messages[0]
+        from_phone = msg["from"]
+        phone_id = value["metadata"]["phone_number_id"]
+        
+        # MANUAL CHECK: Is it a button click or typed text?
+        if msg.get("type") == "interactive":
+            # Extract the ID we hid in the button
+            text_data = msg["interactive"]["button_reply"]["id"]
+        else:
+            text_data = msg.get("text", {}).get("body", "")
 
-        # Fetch Client Config
+        # Fetch the specific client configuration from DB
         client = get_client_config(phone_id)
-        if not client: 
-            print(f"❌ ERROR: No client config found for Phone ID {phone_id}") # DEBUG 2
-            return {"status": "error"}
+        if not client:
+            return {"status": "client_not_found"}
 
-        # ROUTE BASED ON INDUSTRY
-        industry = client.get("industry", "restaurant") 
-        print(f"🔄 ROUTING TO INDUSTRY: {industry}") # DEBUG 3
-
-        try:
-            if industry == "restaurant":
-                await handle_restaurant_logic(client, customer_phone, text, phone_id)
-            elif industry == "clothing":
-                await handle_clothing_logic(client, customer_phone, text, phone_id)
-            else:
-                print(f"⚠️ WARNING: Unknown industry '{industry}'")
-        except Exception as e:
-            print(f"💥 CRASH DETECTED: {str(e)}")
-
+        # Route to Clothing Logic
+        await handle_clothing_logic(client, from_phone, text_data, phone_id)
+        
         return {"status": "success"}
-
     except Exception as e:
         print(f"🚨 WEBHOOK ERROR: {e}")
-        return {"error": str(e)}
-    
-    
+        return {"status": "error"}
+
 @app.get("/webhook")
-def verify_webhook(hub_mode: str = Query(None, alias="hub.mode"), hub_verify_token: str = Query(None, alias="hub.verify_token"), hub_challenge: str = Query(None, alias="hub.challenge")):
-    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+def verify(hub_mode: str = Query(None, alias="hub.mode"), 
+           hub_token: str = Query(None, alias="hub.verify_token"), 
+           hub_challenge: str = Query(None, alias="hub.challenge")):
+    if hub_mode == "subscribe" and hub_token == VERIFY_TOKEN:
         return int(hub_challenge)
     raise HTTPException(status_code=403)
