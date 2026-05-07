@@ -9,38 +9,45 @@ app = FastAPI()
 @app.post("/webhook")
 async def receive_message(body: dict):
     try:
-        # 1. Extraction (Infrastructure remains here)
         value = body["entry"][0]["changes"][0]["value"]
         messages = value.get("messages")
-        if not messages: return {"status": "no message"}
+        if not messages: 
+            return {"status": "no message"}
 
         message = messages[0]
         customer_phone = message["from"]
         phone_id = value.get("metadata", {}).get("phone_number_id")
         text = message.get("text", {}).get("body", "")
 
-        # 2. Fetch Client Config (Infrastructure remains here)
+        print(f"👉 INCOMING MSG: {text} | TO PHONE ID: {phone_id}") # DEBUG 1
+
+        # Fetch Client Config
         client = get_client_config(phone_id)
-        if not client: return {"status": "error"}
+        if not client: 
+            print(f"❌ ERROR: No client config found for Phone ID {phone_id}") # DEBUG 2
+            return {"status": "error"}
 
-        # 3. ROUTE BASED ON INDUSTRY
-        industry = client.get("industry", "restaurant") # Default to restaurant
+        # ROUTE BASED ON INDUSTRY
+        industry = client.get("industry", "restaurant") 
+        print(f"🔄 ROUTING TO INDUSTRY: {industry}") # DEBUG 3
 
-        # app/main.py inside the webhook function
         try:
             if industry == "restaurant":
                 await handle_restaurant_logic(client, customer_phone, text, phone_id)
             elif industry == "clothing":
                 await handle_clothing_logic(client, customer_phone, text, phone_id)
+            else:
+                print(f"⚠️ WARNING: Unknown industry '{industry}'")
         except Exception as e:
-            print(f"CRASH DETECTED: {str(e)}") # This will show up in your Render logs
+            print(f"💥 CRASH DETECTED: {str(e)}")
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"WEBHOOK ERROR: {e}")
+        print(f"🚨 WEBHOOK ERROR: {e}")
         return {"error": str(e)}
-
+    
+    
 @app.get("/webhook")
 def verify_webhook(hub_mode: str = Query(None, alias="hub.mode"), hub_verify_token: str = Query(None, alias="hub.verify_token"), hub_challenge: str = Query(None, alias="hub.challenge")):
     if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
