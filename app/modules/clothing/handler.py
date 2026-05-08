@@ -4,127 +4,147 @@ from app.core.memory import save_message_to_db
 from app.services.ai import generate_replay
 
 # ==========================================
-# 1. MANUAL RULE CHECKS (Bypass AI)
+# 1. STRUCTURAL UTILITIES (0 TOKENS)
 # ==========================================
 
 def get_manual_category(text, categories_map):
-    """Checks for exact word matches using regex boundaries."""
+    """Structural Check: Matches user text against JSON category keywords."""
     for cat_name, synonyms in categories_map.items():
-        for word in synonyms:
-            if re.search(rf"\b{re.escape(word.lower())}\b", text.lower()):
-                return cat_name
+        if any(re.search(rf"\b{re.escape(word.lower())}\b", text.lower()) for word in synonyms):
+            return cat_name
     return None
 
 def get_manual_price(text):
-    """Extracts numbers following 'under', 'below', etc."""
+    """Structural Check: Extracts price from phrases like 'under 500'."""
     match = re.search(r'(?:under|below|less than|<=?)\s*(\d+)', text.lower())
     return int(match.group(1)) if match else None
 
 # ==========================================
-# 2. MAIN ROUTING LOGIC
+# 2. THE MULTI-TENANT ROUTER
 # ==========================================
 
 async def handle_clothing_logic(client, phone_number, message_data, phone_number_id):
+    # Load all configurations from JSON
+    features = client.get("features", {})
+    menus = client.get("menus", {})
     keywords = client.get("keywords", {})
-    
-    # --- A. CHECK FOR BUTTON INTERACTION ---
-    
-    # If the user clicked "View More" (Pagination)
-    if message_data.startswith("more_"):
-        _, cat, prc, off = message_data.split("_")
-        return await send_catalog_ui(
-            client, phone_number, phone_number_id, 
-            category=None if cat == "none" else cat,
-            max_price=None if prc == "none" else int(prc),
-            offset=int(off)
-        )
-        
-    # If the user clicked "Buy Now" on a specific product
-    if message_data.startswith("buy_"):
-        product_id = message_data.split("buy_")[1]
-        reply = f"Awesome choice! 🛍️ We are processing your order for item #{product_id}. A human agent will connect with you shortly for payment and delivery details."
-        return await finalize(phone_number, reply, phone_number_id, "checkout_started")
-
-    # --- B. TEXT INTENT CHECKING ---
     user_text = message_data.lower().strip()
+    
+    # --- PHASE 1: MENU NAVIGATION (Zero-Token) ---
+    
+    # Main Menu Routing
+    is_greeting = any(re.search(rf"\b{re.escape(w)}\b", user_text) for w in keywords.get("greeting", []))
+    if message_data == "menu_main" or is_greeting:
+        # Check if a category or price was mentioned in the greeting string
+        # (Intent Override: "Hi show me shirts" -> Skip Greeting, Show Shirts)
+        cat_check = get_manual_category(user_text, keywords.get("categories", {}))
+        price_check = get_manual_price(user_text)
+        
+        if not (cat_check or price_check):
+            menu_cfg = menus.get("main", {})
+            text = menu_cfg.get("text", "Main Menu").replace("{name}", client.get("name", "Store"))
+            return await finalize(phone_number, text, phone_number_id, "main_menu", buttons=menu_cfg.get("buttons"))
+
+    # Size Guide Routing
+    if message_data == "menu_size" or any(re.search(rf"\b{re.escape(w)}\b", user_text) for w in keywords.get("size_guide", [])):
+        if features.get("size_guide_enabled"):
+            menu_cfg = menus.get("size_guide", {})
+            image_url = client.get("assets", {}).get("size_chart_url")
+            send_whatsapp_message(phone_number, menu_cfg.get("text"), buttons=menu_cfg.get("buttons"), image_url=image_url)
+            return {"status": "size_guide_sent"}
+
+    # --- PHASE 2: DYNAMIC FIT QUIZ (Zero-Token) ---
+    
+    if message_data.startswith("quiz_") and features.get("fit_quiz_enabled"):
+        quiz = client.get("fit_quiz", {})
+        
+        if message_data == "quiz_start":
+            return await finalize(phone_number, quiz.get("q1_text"), phone_number_id, "quiz_q1", buttons=quiz.get("brands"))
+            
+        if message_data.startswith("quiz_brand_"):
+            brand = message_data.split("_")[2]
+            text = quiz.get("q2_text", "").replace("{brand}", brand.capitalize())
+            # Map fit preferences from JSON to button IDs
+            btns = [{"id": f"quiz_fit_{f['id_suffix']}_{brand}", "title": f["title"]} for f in quiz.get("fits", [])]
+            return await finalize(phone_number, text, phone_number_id, "quiz_q2", buttons=btns)
+
+        if message_data.startswith("quiz_fit_"):
+            _, _, fit_pref, brand = message_data.split("_")
+            logic = quiz.get("logic_table", {})
+            size = logic.get(f"{brand}_{fit_pref}", logic.get("default", "M"))
+            text = quiz.get("result_text", "").replace("{size}", size)
+            return await finalize(phone_number, text, phone_number_id, "quiz_result", buttons=[{"id": "menu_catalog", "title": "🛍️ Shop Now"}])
+
+    # --- PHASE 3: CATALOG & FILTERING (Zero-Token) ---
+    
     detected_cat = get_manual_category(user_text, keywords.get("categories", {}))
     max_price = get_manual_price(user_text)
 
-    # RULE 1: If product/price mentioned -> Go straight to Catalog
-    if detected_cat or max_price:
-        return await send_catalog_ui(client, phone_number, phone_number_id, detected_cat, max_price, 0)
+    if (message_data == "menu_catalog" or message_data.startswith("more_") or detected_cat or max_price):
+        if features.get("catalog_enabled"):
+            # Determine filters for pagination
+            cat, prc, off = detected_cat, max_price, 0
+            if message_data.startswith("more_"):
+                _, cat_str, prc_str, off_str = message_data.split("_")
+                cat = None if cat_str == "none" else cat_str
+                prc = None if prc_str == "none" else int(prc_str)
+                off = int(off_str)
+            
+            return await send_catalog_ui(client, phone_number, phone_number_id, cat, prc, off)
 
-    # RULE 2: If greeting -> Send Welcome Message
-    if any(re.search(rf"\b{re.escape(w)}\b", user_text) for w in keywords.get("greeting", [])):
-        reply = client.get("intent_responses", {}).get("greeting")
-        btns = [{"id": "more_none_none_0", "title": "🛍️ View All Items"}]
-        return await finalize(phone_number, reply, phone_number_id, "greeting", buttons=btns)
+    if message_data.startswith("buy_"):
+        product_id = message_data.split("buy_")[1]
+        return await finalize(phone_number, f"🛍️ Order started for item #{product_id}. A stylist will contact you.", phone_number_id, "checkout")
 
-    # --- C. AI FALLBACK (Last Resort) ---
-    if client.get("features", {}).get("ai_fallback"):
+    # --- PHASE 4: LIMITED AI FALLBACK (Token Capped) ---
+    
+    if features.get("ai_fallback_enabled"):
+        # The prompt is capped in the JSON (e.g., "Answer in 10 words")
         ai_reply = generate_replay(message_data, client.get("system_prompt"), phone_number)
         return await finalize(phone_number, ai_reply, phone_number_id, "ai_fallback")
 
-    return {"status": "ignored"}
+    # Final Catch-All to prevent dead ends
+    return await finalize(phone_number, "I'm sorry, I didn't catch that. Try using the menu:", phone_number_id, "error_fallback", buttons=menus.get("main", {}).get("buttons"))
 
 # ==========================================
-# 3. CATALOG UI GENERATOR
+# 3. STRUCTURAL HELPERS
 # ==========================================
 
 async def send_catalog_ui(client, phone_number, phone_id, category, max_price, offset):
+    """Sends visual cards based on JSON product data."""
     products = client.get("products", [])
-    currency = client.get("ui", {}).get("currency", "₹")
-    limit = client.get("ui", {}).get("max_items_per_message", 3)
+    ui = client.get("ui", {})
+    limit = ui.get("max_items_per_message", 3)
+    currency = ui.get("currency", "₹")
 
-    # Filter products
-    filtered = [
-        p for p in products 
-        if (not category or p["category"] == category) and (not max_price or p["price"] <= max_price)
-    ]
+    filtered = [p for p in products if (not category or p["category"] == category) and (not max_price or p["price"] <= max_price)]
 
     if not filtered:
-        return await finalize(phone_number, "Sorry, we don't have items matching that criteria right now.", phone_id, "no_results")
+        return await finalize(phone_number, "No items found matching your filter.", phone_id, "no_results")
 
-    # Slice for current page
-    page_items = filtered[offset : offset + limit]
-    
-    # 1. SEND HEADER (Optional, but good for context)
+    # 1. Header Message
     if offset == 0:
-        header = f"👕 *{client['name']} Selection*\n"
+        header = f"👕 *{client['name']} Catalog*\n"
         if category: header += f"Type: {category.capitalize()}\n"
         if max_price: header += f"Budget: {currency}{max_price}"
-        send_whatsapp_message(to=phone_number, text=header)
+        send_whatsapp_message(phone_number, header)
 
-    # 2. SEND INDIVIDUAL PRODUCT CARDS (The Catalogue UI)
+    # 2. Individual Cards
+    page_items = filtered[offset : offset + limit]
     for p in page_items:
-        item_text = f"*{p['name']}*\n💰 Price: {currency}{p['price']}\n📝 {p['description']}"
-        item_buttons = [{"id": f"buy_{p['id']}", "title": "🛒 Buy Now"}]
-        
-        # This calls the updated whatsapp.py that supports image_url
-        send_whatsapp_message(
-            to=phone_number, 
-            text=item_text, 
-            buttons=item_buttons, 
-            image_url=p['image_url']
-        )
+        text = f"*{p['name']}*\n💰 {currency}{p['price']}\n📝 {p['description']}"
+        btns = [{"id": f"buy_{p['id']}", "title": "🛒 Buy Now"}]
+        send_whatsapp_message(phone_number, text, buttons=btns, image_url=p['image_url'])
 
-    # 3. SEND PAGINATION (View More)
-    next_offset = offset + limit
-    if next_offset < len(filtered):
-        state_id = f"more_{category if category else 'none'}_{max_price if max_price else 'none'}_{next_offset}"
-        btns = [{"id": state_id, "title": "⬇️ View More"}]
-        more_text = f"We have {len(filtered) - next_offset} more items in this category!"
-        return await finalize(phone_number, more_text, phone_id, "catalog_page", buttons=btns)
-    else:
-        end_text = "✅ *You've seen everything in this category!*"
-        return await finalize(phone_number, end_text, phone_id, "catalog_end")
-
-# ==========================================
-# 4. FINALIZER HELPER
-# ==========================================
+    # 3. View More Logic
+    next_off = offset + limit
+    if next_off < len(filtered):
+        state_id = f"more_{category if category else 'none'}_{max_price if max_price else 'none'}_{next_off}"
+        return await finalize(phone_number, f"We have {len(filtered)-next_off} more items!", phone_id, "catalog_more", buttons=[{"id": state_id, "title": "⬇️ View More"}])
+    
+    return await finalize(phone_number, "✅ *End of collection.*", phone_id, "catalog_end", buttons=[{"id": "menu_main", "title": "🏠 Main Menu"}])
 
 async def finalize(phone_num, text, phone_id, status, buttons=None):
-    """Sends a text/button message and saves to DB."""
-    send_whatsapp_message(to=phone_num, text=text, buttons=buttons)
+    send_whatsapp_message(phone_num, text, buttons=buttons)
     save_message_to_db(phone_num, "assistant", text, phone_id)
     return {"status": status}
